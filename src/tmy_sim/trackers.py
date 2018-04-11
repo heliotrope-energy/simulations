@@ -130,7 +130,7 @@ class OptimalTracker:
 
         max_pwr = 0
         max_angle = 0
-        for config in tqdm(self.configurations):
+        for config in self.configurations:
             _,ac,  _, _ = calculate_energy(config,
                                         self.azimuth,
                                         state.get_objects_of_class('env')[0]['albedo'],

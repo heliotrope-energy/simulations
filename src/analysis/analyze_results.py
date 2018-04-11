@@ -12,7 +12,7 @@ def load_results(folder, output):
             filepath="{}/{}".format(folder, file)
             with open(filepath, 'r') as f:
                 lines = f.readlines()
-                data_pt = {"tmy_id":lines[0], "albedo": float(lines[1]), "steps": float(lines[2])}
+                data_pt = {"tmy_id":lines[0], "albedo": float(lines[1]), "tmy_loc_name": lines[3], "steps": float(lines[2])}
                 for line in lines[3:]:
                     data_pt[line.split()[3]] = float(line.split()[0])
                 data.append(data_pt)
