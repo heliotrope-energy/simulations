@@ -46,7 +46,7 @@ def run():
     interpolated = [interpolate_column(tmy_data, col) for col in cols_to_interpolate]
 
     df = pd.concat(interpolated, axis=1)
-    plt.figure(figsize=(10,10))
+    plt.figure(figsize=(50,50))
     df.plot();
     plt.savefig("interpolated_all.png")
 

@@ -1,4 +1,8 @@
 import simple_rl as rl
+import numpy as np
+from energy_calcs import *
+from tqdm import tqdm
+from random import randint
 
 class FixedPolicyTracker:
     def __init__(self, angle, azimuth):
@@ -19,7 +23,7 @@ class RandomTracker:
         self.min = min
         self.azimuth = azimuth
         self.fallback_angle= 0
-    def get_angle(self, state):
+    def get_angle(self, state, reward):
         return randint(self.min, self.max)
     def get_azimuth(self):
         return self.azimuth
@@ -29,7 +33,7 @@ class AstroTracker:
         self.name="astronomical"
         self.azimuth = azimuth
         self.fallback_angle = fallback_angle
-    def get_angle(self, state):
+    def get_angle(self, state, reward):
 
         # angle_pos = pvlib.tracking.singleaxis(zenith, azi, backtrack=False)
         surface_tilt = state.get_objects_of_class('tracker')[0]['tracker_theta']
@@ -78,6 +82,7 @@ class SARSATracker:
         self.azimuth = azimuth
         self.fallback_angle = 30
         self.action_step = action_step
+        self.limits = limits
 
         actions = ['inc', 'dec', 'same']
         self.agent = rl.agents.LinearSarsaAgent(actions, num_features)
@@ -98,7 +103,43 @@ class SARSATracker:
         elif action == "dec":
             new_angle -= self.action_step
 
-        if new_angle < limits[0] or new_angle > limits[1]:
+        if new_angle < self.limits[0] or new_angle > self.limits[1]:
             return prev_angle
 
-        return angle
+        return new_angle
+
+class OptimalTracker:
+    '''
+    Scans every possible angle for the best configuration.
+    '''
+    def __init__(self, azimuth, limits=(-90, 90), bins=100):
+        self.name="Optimal"
+        self.azimuth = azimuth
+        self.fallback_angle = 30
+        self.configurations = np.linspace(limits[0], limits[1], num=bins)
+
+    def get_azimuth(self):
+        return self.azimuth
+
+    def get_angle(self, state, prev_reward):
+        '''
+        Slow and steady hopefully wins the race.
+        '''
+
+        current_index = pd.to_datetime(state.get_objects_of_class('env')[0]['datetime'])
+
+        max_pwr = 0
+        max_angle = 0
+        for config in tqdm(self.configurations):
+            _,ac,  _, _ = calculate_energy(config,
+                                        self.azimuth,
+                                        state.get_objects_of_class('env')[0]['albedo'],
+                                        state.get_objects_of_class('env')[0]['Wspd'],
+                                        state.get_objects_of_class('env')[0]['DryBulb'],
+                                        current_index, state.get_objects_of_class('sun')[0], state.get_objects_of_class('env')[0]['DHI'], state.get_objects_of_class('env')[0]['DNI'], state.get_objects_of_class('env')[0]['GHI'], "", save_data=False)
+
+            if float(ac) > max_pwr:
+                max_pwr = float(ac)
+                max_angle = config
+
+        return max_angle

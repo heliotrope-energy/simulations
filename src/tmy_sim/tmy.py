@@ -6,7 +6,6 @@ from pvlib.pvsystem import PVSystem, retrieve_sam
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from random import randint
 import numpy as np
 import simple_rl as rl
 from simple_rl.mdp.oomdp.OOMDPObjectClass import OOMDPObject
@@ -14,16 +13,51 @@ from simple_rl.mdp.oomdp.OOMDPStateClass import OOMDPState
 from tqdm import trange
 import time
 from trackers import *
-loc = "/Users/edwardwilliams/Documents/research/heliotrope/simulations/data/722745TYA.CSV"
+from energy_calcs import calculate_energy, energy_motion
+import os
 
-def run_sim_on_tracker(tracker, tmy_data, sand_point, n_epochs=10, n_steps=500, energy_per_deg_per_mw = 0.01):
+def tmy_step_to_OOMDP(current_step_data, tracker, solpos, old_tilt, albedo):
+    '''
+    Creates OOMDP state from TMY data.
+    '''
+
+    #time since epoch in sec
+    last_unix = current_step_data.index.view('int64')
+    #time of day
+    hour = current_step_data.index.hour
+
+    sun_attributes = {'apparent_zenith': float(solpos['apparent_zenith']), 'azimuth': float(solpos['azimuth'])}
+    env_attributes = {'DHI': float(current_step_data['DHI']), 'GHI': float(current_step_data['GHI']), 'DNI':float(current_step_data['DNI']), 'Wspd':float(current_step_data['Wspd']), 'DryBulb': float(current_step_data['DryBulb']), 'TotCld':float(current_step_data['TotCld']), 'OpqCld':float(current_step_data['OpqCld']),
+                        'albedo':albedo,  'datetime':last_unix, 'hour':hour}
+
+    angle_pos = pvlib.tracking.singleaxis(solpos['apparent_zenith'], solpos['azimuth'], backtrack=False)
+
+    surface_tilt = angle_pos['tracker_theta']
+    # print(surface_tilt)
+    if np.isnan(surface_tilt[0]):
+        #TODO: fix this wrt hour
+        surface_tilt = tracker.fallback_angle if hour > 12 else -tracker.fallback_angle
+
+    tracker_attributes = {'tracker_theta':surface_tilt, 'prev_angle':old_tilt}
+
+    sun_obj = OOMDPObject(sun_attributes, name="sun")
+    env_obj = OOMDPObject(env_attributes, name="env")
+    tracker_obj = OOMDPObject(tracker_attributes, name="tracker")
+
+    #passing list of objects for class!
+    objects = {'sun':[sun_obj], 'env':[env_obj], 'tracker':[tracker_obj]}
+    return OOMDPState(objects)
+
+def run_sim_on_tracker(tracker, tmy_data, sand_point, albedo,  n_epochs=10, n_steps=500,):
     '''
     Returns power, angle history
-    energy_per_deg_per_mw = energy consumed in Kwh per mw per degree when moving
-    source: ATI DuraTrack HZ3 Spec sheet
-    '''
-    print("running {}".format(tracker.name))
 
+    '''
+    print("running {} \n".format(tracker.name))
+    sandia_modules = retrieve_sam('sandiamod')
+    cec_inverters = retrieve_sam('cecinverter')
+    module = sandia_modules['Canadian_Solar_CS5P_220M___2009_']
+    cap = float(module['Isco']*module['Voco']/(10**6)) #convert to MW
     #TODO: save previous state/reward
     for e in trange(n_epochs):
         #returning results from most recent epoch
@@ -33,6 +67,7 @@ def run_sim_on_tracker(tracker, tmy_data, sand_point, n_epochs=10, n_steps=500, 
         energy_consumed_move = np.zeros((n_steps,))
         temps = pd.DataFrame()
         radiation_rows = []
+        ac_all = np.zeros((n_steps,))
         surface_azimuth = tracker.get_azimuth()
         old_tilt = 0
         prev_reward = 0
@@ -42,103 +77,27 @@ def run_sim_on_tracker(tracker, tmy_data, sand_point, n_epochs=10, n_steps=500, 
             solpos = pvlib.solarposition.get_solarposition(current_step_data.index, sand_point.latitude, sand_point.longitude)
 
 
-            #time since epoch
-            last_unix = time.mktime(tmy_data.index[i].timetuple())
-            #time of day
-            hour = tmy_data.index[i].hour
-
-            sun_attributes = {'apparent_zenith': float(solpos['apparent_zenith']), 'azimuth': float(solpos['azimuth'])}
-            env_attributes = {'GHI': float(current_step_data['GHI']), 'DNI':float(current_step_data['DNI']), 'DryBulb': float(current_step_data['DryBulb']), 'TotCld':float(current_step_data['TotCld']), 'OpqCld':float(current_step_data['OpqCld']), 'epoch':last_unix, 'hour':hour}
-
-            angle_pos = pvlib.tracking.singleaxis(solpos['apparent_zenith'], solpos['azimuth'], backtrack=False)
-
-            surface_tilt = angle_pos['tracker_theta']
-            # print(surface_tilt)
-            if np.isnan(surface_tilt[0]):
-                #TODO: fix this wrt hour
-                surface_tilt = tracker.fallback_angle if hour > 12 else -tracker.fallback_angle
-
-            tracker_attributes = {'tracker_theta':surface_tilt, 'prev_angle':old_tilt}
-
-            sun_obj = OOMDPObject(sun_attributes, name="sun")
-            env_obj = OOMDPObject(env_attributes, name="env")
-            tracker_obj = OOMDPObject(tracker_attributes, name="tracker")
-
-            #passing list of objects for class!
-            objects = {'sun':[sun_obj], 'env':[env_obj], 'tracker':[tracker_obj]}
-            state = OOMDPState(objects)
+            state = tmy_step_to_OOMDP(current_step_data, tracker, solpos, old_tilt, albedo)
 
             surface_tilt = float(tracker.get_angle(state, prev_reward))
             angles[i] = surface_tilt
 
-            # the extraradiation function returns a simple numpy array
-            # instead of a nice pandas series. We will change this
-            # in a future version
-            dni_extra = pvlib.irradiance.extraradiation(current_step_data.index)
-            dni_extra = pd.Series(dni_extra, index=current_step_data.index)
-
-            # print(dni_extra)
-
-            airmass = pvlib.atmosphere.relativeairmass(solpos['apparent_zenith'])
-
-            # print(airmass)
-
-            poa_sky_diffuse = pvlib.irradiance.haydavies(surface_tilt, surface_azimuth,
-                                                         current_step_data['DHI'], current_step_data['DNI'], dni_extra,
-                                                         solpos['apparent_zenith'], solpos['azimuth'])
-            # print(poa_sky_diffuse)
-
-            poa_ground_diffuse = pvlib.irradiance.grounddiffuse(surface_tilt, current_step_data['GHI'], albedo=albedo)
-
-
-
-
-            aoi = pvlib.irradiance.aoi(surface_tilt, surface_azimuth, solpos['apparent_zenith'], solpos['azimuth'])
-
-            poa_irrad = pvlib.irradiance.globalinplane(aoi, current_step_data['DNI'], poa_sky_diffuse, poa_ground_diffuse)
-
-            pvtemps = pvlib.pvsystem.sapm_celltemp(poa_irrad['poa_global'], current_step_data['Wspd'], current_step_data['DryBulb'])
-
-            # radiation_timestep = pd.concat([dni_extra,poa_sky_diffuse,poa_ground_diffuse,poa_irrad], axis=1,verify_integrity=True)
-            # radiation_timestep = pd.DataFrame({"dni extra {}".format(tracker.name):[dni_extra, "sky diffuse {}".format(tracker.name):poa_sky_diffuse, "ground diffuse {}".format(tracker.name):poa_ground_diffuse, "POA direct {}".format(tracker.name):poa_irrad['poa_direct']})
-
-            #renaming series
-            dni_extra.rename("dni extra {}".format(tracker.name), inplace=True)
-            poa_sky_diffuse.rename("sky diffuse {}".format(tracker.name), inplace=True)
-            poa_ground_diffuse.rename("ground diffuse {}".format(tracker.name), inplace=True)
-            poa_irrad.poa_direct.rename("poa direct {}".format(tracker.name), inplace=True)
-            rad_timestep = pd.concat([dni_extra, poa_sky_diffuse, poa_ground_diffuse, poa_irrad.poa_direct], axis=1)
+            sapm_out, ac, rad_timestep, pvtemps = calculate_energy(surface_tilt, surface_azimuth, albedo, current_step_data['Wspd'], current_step_data['DryBulb'], current_step_data.index, solpos,  current_step_data['DHI'],  current_step_data['DNI'],  current_step_data['GHI'], tracker.name)
 
             radiation_rows.append(rad_timestep)
 
-            sandia_modules = retrieve_sam('sandiamod')
-            cec_inverters = retrieve_sam('cecinverter')
-            module = sandia_modules['Canadian_Solar_CS5P_220M___2009_']
-
-            cap = float(module['Isco']*module['Voco']/(10**6)) #convert to MW
-
-            angle_delta = abs(old_tilt - surface_tilt)
-
-            eng_consumed_move = cap*angle_delta*energy_per_deg_per_mw
-            energy_consumed_move[i] = eng_consumed_move
+            eng_consumed_move = energy_motion(old_tilt, surface_tilt, cap)
             old_tilt = surface_tilt
+            prev_reward = float(ac) - eng_consumed_move*1000
+            energy_consumed_move[i] = eng_consumed_move
 
-            inverter = cec_inverters['SMA_America__SC630CP_US_315V__CEC_2012_']
-
-            effective_irradiance = pvlib.pvsystem.sapm_effective_irradiance(poa_irrad.poa_direct, poa_irrad.poa_diffuse, airmass, aoi, module)
-
-            sapm_out = pvlib.pvsystem.sapm(effective_irradiance, pvtemps.temp_cell, module)
-
-            prev_reward = float(sapm_out['p_mp']) - eng_consumed_move*1000
-
-            total = total.append(sapm_out)
+            ac_all[i] = ac - eng_consumed_move*1000 #kwh to wh
             temps = temps.append(pvtemps)
-            total['p cumulative {}'.format(tracker.name)] = total.p_mp.cumsum() - eng_consumed_move*1000 #kwh to wh
 
 
     #convert angles to df
-    angles_series = pd.Series(angles, index=tmy_data.index[0:n_hours])
-    energy_consumed = pd.Series(energy_consumed_move, index=tmy_data.index[0:n_hours])
+    angles_series = pd.Series(angles, index=tmy_data.index[0:n_steps])
+    energy_consumed = pd.Series(energy_consumed_move, index=tmy_data.index[0:n_steps])
 
     radiation = pd.concat(radiation_rows, axis=0)
     #rename
@@ -146,9 +105,17 @@ def run_sim_on_tracker(tracker, tmy_data, sand_point, n_epochs=10, n_steps=500, 
 
     angles_df = pd.DataFrame(angles_series, columns=['angle {}'.format(tracker.name)])
     energy_consumed_df = pd.DataFrame(energy_consumed, columns=['energy consumed {}'.format(tracker.name)])
-    return total, angles_df, temps, energy_consumed_df, radiation
 
-def generate_plots(results):
+    ac_total = pd.Series(ac_all, index=tmy_data.index[0:n_steps])
+    sum = ac_total.sum()
+
+    ac_df = pd.DataFrame(ac_total, columns=['ac_step'])
+    ac_df['p cumulative {}'.format(tracker.name)] = ac_df.cumsum()
+
+
+    return ac_df, angles_df, temps, energy_consumed_df, radiation, sum
+
+def generate_plots(results, albedo, output_loc, tmy_id, steps):
 
     fig, ((ax, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(50,50))
 
@@ -163,7 +130,7 @@ def generate_plots(results):
     ax2.set_ylabel("angle (deg)")
     ax3.set_ylabel("cell temp (Deg C)")
     ax4.set_ylabel("energy consumed (kwh)")
-    plt.savefig("../plots/tmy_results.png")
+    plt.savefig("{}/{}_{}_tmy_results.png".format(output_loc, tmy_id, albedo))
     plt.close()
 
     f, ((ax5, ax6), (ax7, ax8)) = plt.subplots(2, 2, figsize=(50,50))
@@ -180,30 +147,39 @@ def generate_plots(results):
     ax6.set_ylabel("Irradiance (W)")
     ax7.set_ylabel("Irradiance (W)")
     ax8.set_ylabel("Irradiance (W)")
-    plt.savefig("../plots/tmy_rad_breakdown.png")
+    plt.savefig("{}/{}_{}_tmy_rad_breakdown.png".format(output_loc, tmy_id, albedo))
 
-def run():
+
+    #printing results values
+    outstrings = [tmy_id, str(albedo), steps]
+    for name, res in results.items():
+        outstrings.append("{} produced by {}".format(res[5], name))
+
+    with open("{}/summary_{}_{}.txt".format(output_loc, tmy_id, albedo), 'w') as f:
+        f.write("\n".join(outstrings))
+
+def run(loc, albedo, output_loc, name, steps=1000):
+
     #TODO: test with different fixed trackers
     fixed = FixedPolicyTracker(30, 90) #azimuth angle
-    rand = RandomTracker(10, 80, 90)
+    rand = RandomTracker(-70, 90, 90)
     astro = AstroTracker(90)
-    ucb = LinUCBTracker(90, context_size=11)
-    sarsa = SARSATracker(90, 11)
+    ucb = LinUCBTracker(90, context_size=13)
+    sarsa = SARSATracker(90, 13)
+    optimal = OptimalTracker(90)
 
-    trackers = [astro, ucb, sarsa]
+    trackers = [astro, optimal]
 
     tmy_data, meta = pvlib.tmy.readtmy3(filename=loc)
-
-    #TODO: change this
-    albedo = 0.2 #assume fixed, changing in reality
 
     # create pvlib Location object based on meta data
     sand_point = pvlib.location.Location(meta['latitude'], meta['longitude'], tz='US/Arizona',
                                          altitude=meta['altitude'], name=meta['Name'].replace('"',''))
 
-    results = {tracker.name:run_sim_on_tracker(tracker, tmy_data, sand_point) for tracker in trackers}
+    results = {tracker.name:run_sim_on_tracker(tracker, tmy_data, sand_point, albedo, n_epochs=1, n_steps=steps) for tracker in trackers}
 
-    generate_plots(results)
+    generate_plots(results, albedo, output_loc, name, steps)
 
 if __name__=="__main__":
-    run()
+    loc = "/Users/edwardwilliams/Documents/research/heliotrope/simulations/data/722745TYA.CSV"
+    run(loc, 0.2, "../../plots/all_tmy", '722745TYA', steps=100)
