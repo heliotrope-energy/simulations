@@ -3,22 +3,15 @@
 import pvlib
 import pandas as pd
 from pvlib.pvsystem import PVSystem, retrieve_sam
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import numpy as np
-import simple_rl as rl
-from simple_rl.mdp.oomdp.OOMDPObjectClass import OOMDPObject
-from simple_rl.mdp.oomdp.OOMDPStateClass import OOMDPState
 from tqdm import trange
 import time
 from trackers import *
 from energy_calcs import calculate_energy, energy_motion
 import os
 
-def tmy_step_to_OOMDP(current_step_data, tracker, solpos, old_tilt, albedo):
+def tmy_step_to_dict(current_step_data, tracker, solpos, old_tilt, albedo):
     '''
-    Creates OOMDP state from TMY data.
+    Creates dict state from TMY data.
     '''
 
     #time since epoch in sec
@@ -40,13 +33,9 @@ def tmy_step_to_OOMDP(current_step_data, tracker, solpos, old_tilt, albedo):
 
     tracker_attributes = {'tracker_theta':surface_tilt, 'prev_angle':old_tilt}
 
-    sun_obj = OOMDPObject(sun_attributes, name="sun")
-    env_obj = OOMDPObject(env_attributes, name="env")
-    tracker_obj = OOMDPObject(tracker_attributes, name="tracker")
-
     #passing list of objects for class!
-    objects = {'sun':[sun_obj], 'env':[env_obj], 'tracker':[tracker_obj]}
-    return OOMDPState(objects)
+    objects = {'sun':[sun_attributes], 'env':[env_attributes], 'tracker':[tracker_attributes]}
+    return objects
 
 def run_sim_on_tracker(tracker, tmy_data, sand_point, albedo,  n_epochs=10, n_steps=500,):
     '''
@@ -78,7 +67,7 @@ def run_sim_on_tracker(tracker, tmy_data, sand_point, albedo,  n_epochs=10, n_st
             solpos = pvlib.solarposition.get_solarposition(current_step_data.index, sand_point.latitude, sand_point.longitude)
 
 
-            state = tmy_step_to_OOMDP(current_step_data, tracker, solpos, old_tilt, albedo)
+            state = tmy_step_to_dict(current_step_data, tracker, solpos, old_tilt, albedo)
 
             surface_tilt = float(tracker.get_angle(state, prev_reward))
             angles[i] = surface_tilt
@@ -171,8 +160,8 @@ def run(loc, albedo, output_loc, name, steps=1000):
     fixed = FixedPolicyTracker(30, 90) #azimuth angle
     rand = RandomTracker(-70, 90, 90)
     astro = AstroTracker(90)
-    ucb = LinUCBTracker(90, context_size=13)
-    sarsa = SARSATracker(90, 13)
+    # ucb = LinUCBTracker(90, context_size=13)
+    # sarsa = SARSATracker(90, 13)
     optimal = OptimalTracker(90)
 
     trackers = [astro, optimal]
