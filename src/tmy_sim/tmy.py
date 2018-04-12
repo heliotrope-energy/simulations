@@ -72,6 +72,7 @@ def run_sim_on_tracker(tracker, tmy_data, sand_point, albedo,  n_epochs=10, n_st
         old_tilt = 0
         prev_reward = 0
         for i in range(n_steps):
+            print(i)
             current_step_data = tmy_data[tmy_data.index[i]:tmy_data.index[i]]
 
             solpos = pvlib.solarposition.get_solarposition(current_step_data.index, sand_point.latitude, sand_point.longitude)
@@ -112,13 +113,20 @@ def run_sim_on_tracker(tracker, tmy_data, sand_point, albedo,  n_epochs=10, n_st
     ac_df = pd.DataFrame(ac_total, columns=['ac_step'])
     ac_df['p cumulative {}'.format(tracker.name)] = ac_df.cumsum()
 
-
     return ac_df, angles_df, temps, energy_consumed_df, radiation, sum
+
+def save_results(results, albedo, output_loc, tmy_id, steps, tmy_loc_name):
+    #printing results values
+    outstrings = [tmy_id, str(albedo), str(steps), tmy_loc_name]
+    for name, res in results.items():
+        outstrings.append("{} produced by {}".format(res[5], name))
+
+    with open("{}/summary_{}_{}.txt".format(output_loc, tmy_id, albedo), 'w') as f:
+        f.write("\n".join(outstrings))
 
 def generate_plots(results, albedo, output_loc, tmy_id, steps, tmy_loc_name):
 
     fig, ((ax, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(50,50))
-
 
     for name, res in results.items():
         res[0][['p cumulative {}'.format(name)]].plot(ax=ax)
@@ -159,7 +167,6 @@ def generate_plots(results, albedo, output_loc, tmy_id, steps, tmy_loc_name):
         f.write("\n".join(outstrings))
 
 def run(loc, albedo, output_loc, name, steps=1000):
-
     #TODO: test with different fixed trackers
     fixed = FixedPolicyTracker(30, 90) #azimuth angle
     rand = RandomTracker(-70, 90, 90)
@@ -172,17 +179,19 @@ def run(loc, albedo, output_loc, name, steps=1000):
 
     tmy_data, meta = pvlib.tmy.readtmy3(filename=loc)
 
+
     # create pvlib Location object based on meta data
     #TODO: add this to logs
-    sand_point = pvlib.location.Location(meta['latitude'], meta['longitude'], tz='US/Arizona',
+    sand_point = pvlib.location.Location(meta['latitude'], meta['longitude'], tz=meta['TZ'],
                                          altitude=meta['altitude'], name=meta['Name'].replace('"',''))
 
     if steps=="max":
         steps = len(tmy_data.index)
-
+    # print("starting simulation")
     results = {tracker.name:run_sim_on_tracker(tracker, tmy_data, sand_point, albedo, n_epochs=1, n_steps=steps) for tracker in trackers}
-
-    generate_plots(results, albedo, output_loc, name, steps, meta['Name'])
+    # print("done 1")
+    save_results(results, albedo, output_loc, meta['State'] , steps, meta['Name'])
+    print("simulation complete!")
 
 if __name__=="__main__":
     loc = "/Users/edwardwilliams/Documents/research/heliotrope/simulations/data/722745TYA.CSV"

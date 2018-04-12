@@ -40,7 +40,10 @@ class AstroTracker:
         # if np.isnan(surface_tilt[0]):
         #     #TODO: fix this
         #     surface_tilt = self.fallback_angle
-        return surface_tilt
+        #adding noise
+        noise = np.random.normal(loc=0, scale=1.5)
+
+        return surface_tilt + noise
     def get_azimuth(self):
         return self.azimuth
 
@@ -112,7 +115,7 @@ class OptimalTracker:
     '''
     Scans every possible angle for the best configuration.
     '''
-    def __init__(self, azimuth, limits=(-90, 90), bins=100):
+    def __init__(self, azimuth, limits=(-50, 50), bins=50):
         self.name="Optimal"
         self.azimuth = azimuth
         self.fallback_angle = 30
