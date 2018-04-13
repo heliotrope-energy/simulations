@@ -5,9 +5,147 @@ import pandas as pd
 from pvlib.pvsystem import PVSystem, retrieve_sam
 from tqdm import trange
 import time
-from trackers import *
-from energy_calcs import calculate_energy, energy_motion
 import os
+import numpy as np
+
+sandia_modules = retrieve_sam('sandiamod')
+sapm_inverters = pvlib.pvsystem.retrieve_sam('cecinverter')
+
+class OptimalTracker:
+    '''
+    Scans every possible angle for the best configuration.
+    '''
+    def __init__(self, azimuth, limits=(-50, 50), bins=50):
+        self.name="Optimal"
+        self.azimuth = azimuth
+        self.fallback_angle = 30
+        self.configurations = np.linspace(limits[0], limits[1], num=bins)
+
+    def get_azimuth(self):
+        return self.azimuth
+
+    def get_angle(self, state, prev_reward):
+        '''
+        Slow and steady hopefully wins the race.
+        NOTE: updated for grid - removed simple RL state, now
+        '''
+
+        current_index = pd.to_datetime(state['env'][0]['datetime'])
+
+        max_pwr = 0
+        max_angle = 0
+        for config in self.configurations:
+            _,ac,  _, _ = calculate_energy(config,
+                                        self.azimuth,
+                                        state['env'][0]['albedo'],
+                                        state['env'][0]['Wspd'],
+                                        state['env'][0]['DryBulb'],
+                                        current_index, state['sun'][0],
+                                        state['env'][0]['DHI'],
+                                        state['env'][0]['DNI'],
+                                        state['env'][0]['GHI'], "", save_data=False)
+
+            if float(ac) > max_pwr:
+                max_pwr = float(ac)
+                max_angle = config
+
+        return max_angle
+
+class FixedPolicyTracker:
+    def __init__(self, angle, azimuth):
+        self.name="Fixed at {}".format(angle)
+        self.angle = angle
+        self.azimuth = azimuth
+        self.fallback_angle = 0
+    def get_angle(self, state):
+        return self.angle
+    def get_azimuth(self):
+        return self.azimuth
+
+
+class RandomTracker:
+    def __init__(self, min, max, azimuth):
+        self.name="Random from {} to {}".format(min, max)
+        self.max = max
+        self.min = min
+        self.azimuth = azimuth
+        self.fallback_angle= 0
+    def get_angle(self, state, reward):
+        return randint(self.min, self.max)
+    def get_azimuth(self):
+        return self.azimuth
+
+class AstroTracker:
+    def __init__(self, azimuth, fallback_angle=30):
+        self.name="astronomical"
+        self.azimuth = azimuth
+        self.fallback_angle = fallback_angle
+    def get_angle(self, state, reward):
+
+        # angle_pos = pvlib.tracking.singleaxis(zenith, azi, backtrack=False)
+        surface_tilt =state['tracker'][0]['tracker_theta']
+        # if np.isnan(surface_tilt[0]):
+        #     #TODO: fix this
+        #     surface_tilt = self.fallback_angle
+        #adding noise
+        noise = np.random.normal(loc=0, scale=1.5)
+
+        return surface_tilt + noise
+    def get_azimuth(self):
+        return self.azimuth
+
+def calculate_energy(surface_tilt, surface_azimuth, albedo, wspd, drybulb, current_index, solpos, dhi, dni, ghi, tracker_name, save_data = True, module = sandia_modules['Canadian_Solar_CS5P_220M___2009_'],inverter = sapm_inverters['ABB__MICRO_0_25_I_OUTD_US_208_208V__CEC_2014_'] ):
+    dni_extra = pvlib.irradiance.extraradiation(current_index)
+    dni_extra = pd.Series(dni_extra, index=current_index)
+
+    # print(dni_extra)
+
+    airmass = pvlib.atmosphere.relativeairmass(solpos['apparent_zenith'])
+
+    # print(airmass)
+
+    poa_sky_diffuse = pvlib.irradiance.haydavies(surface_tilt, surface_azimuth,
+                                                 dhi, dni, dni_extra,
+                                                 solpos['apparent_zenith'], solpos['azimuth'])
+    # print(poa_sky_diffuse)
+
+    poa_ground_diffuse = pvlib.irradiance.grounddiffuse(surface_tilt, ghi, albedo=albedo)
+
+
+    aoi = pvlib.irradiance.aoi(surface_tilt, surface_azimuth, solpos['apparent_zenith'], solpos['azimuth'])
+
+    poa_irrad = pvlib.irradiance.globalinplane(aoi, dni, poa_sky_diffuse, poa_ground_diffuse)
+
+    pvtemps = pvlib.pvsystem.sapm_celltemp(poa_irrad['poa_global'], wspd, drybulb)
+
+
+    rad_timestep = None
+    #renaming series
+    if save_data:
+        dni_extra.rename("dni extra {}".format(tracker_name), inplace=True)
+        poa_sky_diffuse.rename("sky diffuse {}".format(tracker_name), inplace=True)
+        poa_ground_diffuse.rename("ground diffuse {}".format(tracker_name), inplace=True)
+        poa_irrad.poa_direct.rename("poa direct {}".format(tracker_name), inplace=True)
+        rad_timestep = pd.concat([dni_extra, poa_sky_diffuse, poa_ground_diffuse, poa_irrad.poa_direct], axis=1)
+
+
+
+    effective_irradiance = pvlib.pvsystem.sapm_effective_irradiance(poa_irrad['poa_direct'], poa_irrad['poa_diffuse'], airmass, aoi, module)
+
+    sapm_out = pvlib.pvsystem.sapm(effective_irradiance, pvtemps.temp_cell, module)
+
+    ac =  pvlib.pvsystem.snlinverter(sapm_out['v_mp'], sapm_out['p_mp'], inverter)
+
+    return sapm_out, ac, rad_timestep, pvtemps
+
+def energy_motion(start, end, cap, energy_per_deg_per_mw = 0.01):
+    '''
+    energy_per_deg_per_mw = energy consumed in Kwh per mw per degree when moving
+    source: ATI DuraTrack HZ3 Spec sheet
+    '''
+    angle_delta = abs(end - start)
+
+    return cap*angle_delta*energy_per_deg_per_mw
 
 def tmy_step_to_dict(current_step_data, tracker, solpos, old_tilt, albedo):
     '''
