@@ -3,7 +3,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+#data files
 *.csv
+*.pkl
 
 *.DS_Store
 *.png

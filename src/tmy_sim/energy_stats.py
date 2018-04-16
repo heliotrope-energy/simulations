@@ -32,12 +32,12 @@ def calc_irrad_parallel(args):
     '''
     return calculate_irradiance(*args)
 
-def opt_energy(pool, tmy_step_data, solpos, albedo, limits=(-52, 52), azimuth=90, step=2):
+def opt_energy(pool, tmy_step_data, solpos, albedo, limits=(-52, 52), azimuth=90, step=1):
     '''
     Computes the optimal angle from the TMY step data
     '''
 
-    configurations = np.arange(limits[0], limits[1], 2)
+    configurations = np.arange(limits[0], limits[1] + step, step)
 
     args_list = []
     for config in configurations:
@@ -60,7 +60,7 @@ def opt_energy(pool, tmy_step_data, solpos, albedo, limits=(-52, 52), azimuth=90
 
     return opt_angle, opt_energy
 
-def astro_energy(tmy_step_data, sand_point, solpos, albedo, azimuth=90, fallback_angle = 10):
+def astro_energy(tmy_step_data, sand_point, solpos, albedo, azimuth=90, limits=(-52, 52), fallback_angle = 0):
     '''
     Gets the energy produced by an astronomical tracker at the provided TMY step.
     '''
@@ -69,16 +69,23 @@ def astro_energy(tmy_step_data, sand_point, solpos, albedo, azimuth=90, fallback
 
     angle_pos = pvlib.tracking.singleaxis(solpos['apparent_zenith'], solpos['azimuth'], backtrack=False)
 
-    surface_tilt = angle_pos['tracker_theta']
+    surface_tilt = float(angle_pos['tracker_theta'])
     # print(surface_tilt)
-    if np.isnan(surface_tilt[0]):
+    if np.isnan(surface_tilt):
         surface_tilt = fallback_angle if hour > 12 else -fallback_angle
 
-    #simulating inaccuracy of controller
-    #this reflects ATI tracker - other controllers claim to be higher
-    noise = np.random.normal(loc=0, scale=1.5)
 
-    astro_angle = surface_tilt + noise
+    #handling tracker limits! movement!
+    if surface_tilt < limits[0]:
+        surface_tilt = limits[0]
+    elif surface_tilt > limits[1]:
+        surface_tilt = limits[1]
+
+    #simulating inaccuracy of controller
+    #this reflects ATI tracker - other controllers claim to be higher precision
+    # noise = np.random.normal(loc=0, scale=1.5)
+
+    astro_angle = int(surface_tilt)
 
     #TODO: move this to irradiance calculation
     astro_energy = float(calculate_energy(astro_angle, azimuth, albedo, tmy_step_data['Wspd'], tmy_step_data['DryBulb'], tmy_step_data.index, solpos, tmy_step_data['DHI'], tmy_step_data['DNI'], tmy_step_data['GHI'], "", False)[0])
@@ -112,7 +119,7 @@ def generate_energy_records(tmy_data, sand_point, albedo, n_steps, n_procs=3):
 
     #convert to DataFrame
 
-    optimal_df = pd.DataFrame(data={"opt_eng":opt_engs, "opt_angle":opt_angles, "astro_angles":astro_angles, "astro_eng":astro_engs}, index=tmy_data.index[0:n_steps])
+    optimal_df = pd.DataFrame(data={"opt_eng":opt_engs, "opt_angle":opt_angles, "astro_angle":astro_angles, "astro_eng":astro_engs}, index=tmy_data.index[0:n_steps])
 
     return optimal_df
 
